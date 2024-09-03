@@ -1,4 +1,4 @@
-# (wip) probe-rs
+# probe-rs
 
 This service is providing `favicons` based on the given `url` parameter and in addition, is able to resize the returned `ico` based on the passed `?size` query paremter.
 
