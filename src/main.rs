@@ -1,12 +1,12 @@
 use axum::{extract::Path, http::StatusCode, response::Json, routing::get, Router};
 use base64::{engine::general_purpose, Engine as _};
-use image::ImageOutputFormat;
+use image::ImageFormat;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 #[derive(Deserialize, Serialize)]
@@ -21,16 +21,15 @@ async fn resize_image(img_data: &[u8], size: u32) -> Option<Vec<u8>> {
             let resized = img.resize(size, size, image::imageops::FilterType::Lanczos3);
             let mut buffer = Vec::new();
             resized
-                .write_to(&mut Cursor::new(&mut buffer), ImageOutputFormat::Png)
+                .write_to(&mut Cursor::new(&mut buffer), ImageFormat::Png)
                 .ok()?;
             Some(buffer)
         })
         .flatten()
 }
 
-async fn fetch_favicon_url(html: &str, base_url: &str) -> Option<String> {
-    let document = Html::parse_document(html);
-    let base_url = Url::parse(base_url).ok()?;
+fn fetch_favicon_url(html: &str, base_url: Url) -> Option<String> {
+    let document = Html::parse_document(&html);
 
     // Check for <link rel="icon"> or <link rel="shortcut icon">
     let icon_selector =
@@ -57,6 +56,10 @@ async fn fetch_favicon_url(html: &str, base_url: &str) -> Option<String> {
         }
     }
 
+    None
+}
+
+async fn try_basic_locations(base_url: Url) -> Option<String> {
     // If none of the above worked, try common favicon locations
     let common_locations = [
         "/favicon.ico",
@@ -65,17 +68,19 @@ async fn fetch_favicon_url(html: &str, base_url: &str) -> Option<String> {
         "/apple-touch-icon-precomposed.png",
     ];
 
-    // for location in &common_locations {
-    //     let favicon_url = base_url.join(location).ok()?;
-    //     if Client::new()
-    //         .head(favicon_url.as_str())
-    //         .send()
-    //         .await
-    //         .is_ok()
-    //     {
-    //         return Some(favicon_url.to_string());
-    //     }
-    // }
+    for location in &common_locations {
+        let favicon_url = base_url.join(location).ok()?;
+        if Client::new()
+            .head(favicon_url.as_str())
+            .send()
+            .await
+            .ok()?
+            .status()
+            .is_success()
+        {
+            return Some(favicon_url.to_string());
+        }
+    }
 
     None
 }
@@ -87,7 +92,7 @@ async fn fetch_favicon(Path(url): Path<String>) -> Result<Json<FaviconResponse>,
 
     // Fetch the HTML
     let resp = client
-        .get(&base_url)
+        .get(base_url.as_str())
         .header(
             "User-Agent",
             "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)",
@@ -99,17 +104,22 @@ async fn fetch_favicon(Path(url): Path<String>) -> Result<Json<FaviconResponse>,
             StatusCode::BAD_REQUEST
         })?;
 
+
     let html = resp.text().await.map_err(|e| {
         error!("Trying to parse the HTML as text {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Find favicon URL
-    let favicon_url = fetch_favicon_url(&html, &base_url)
-        .await
-        .unwrap_or_else(|| format!("{}/favicon.ico", base_url));
+    let base_url = Url::parse(&base_url).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    info!("Got the favicon url: {favicon_url}");
+    // Attempt to find the favicon URL
+    let favicon_url = match fetch_favicon_url(&html, base_url.clone()) {
+        Some(url) => Some(url),
+        None => {
+            warn!("No Favicon URL found, trying basic locations");
+            try_basic_locations(base_url.clone()).await
+        }
+    }.unwrap_or_else(|| format!("{}/favicon.ico", base_url));
 
     // Fetch favicon
     let favicon_resp = client
