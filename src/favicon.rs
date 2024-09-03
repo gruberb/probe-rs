@@ -1,16 +1,28 @@
-use reqwest::Client;
 use scraper::{Html, Selector};
+use reqwest::Client;
 use url::Url;
-use std::collections::HashMap;
+use tracing::info;
 
-pub fn fetch_favicon_url(html: &str, base_url: Url) -> Option<String> {
-    let document = Html::parse_document(html);
-    let mut icon_candidates: HashMap<String, i32> = HashMap::new();
+pub fn parse_favicon_url(html: &str, base_url: Url) -> Option<String> {
+    let document = Html::parse_document(&html);
 
-    // Helper function to add a candidate
-    fn add_candidate(candidates: &mut HashMap<String, i32>, base_url: &Url, href: &str, priority: i32) {
-        if let Ok(full_url) = base_url.join(href) {
-            candidates.insert(full_url.to_string(), priority);
+    let mut favicon_urls = Vec::new();
+
+    // Helper function to parse the size attribute and extract the resolution
+    fn parse_size(size: Option<&str>) -> u32 {
+        size.and_then(|s| s.split('x').next())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0)
+    }
+
+    // Check for <link rel="icon" type="image/svg+xml">
+    let svg_selector = Selector::parse(r#"link[rel="icon"][type="image/svg+xml"]"#).unwrap();
+    for svg_element in document.select(&svg_selector) {
+        if let Some(href) = svg_element.value().attr("href") {
+            if let Ok(url) = base_url.join(href) {
+                // Add SVGs with high priority (considering SVGs as having infinite resolution)
+                favicon_urls.push((u32::MAX, url.to_string()));
+            }
         }
     }
 
@@ -18,11 +30,10 @@ pub fn fetch_favicon_url(html: &str, base_url: Url) -> Option<String> {
     let icon_selector = Selector::parse(r#"link[rel~="icon"], link[rel~="shortcut icon"]"#).unwrap();
     for icon_element in document.select(&icon_selector) {
         if let Some(href) = icon_element.value().attr("href") {
-            let priority = icon_element.value().attr("sizes")
-                .and_then(|sizes| sizes.split('x').next())
-                .and_then(|size| size.parse::<i32>().ok())
-                .unwrap_or(16);  // Default to 16 if size is not specified
-            add_candidate(&mut icon_candidates, &base_url, href, priority);
+            let size = parse_size(icon_element.value().attr("sizes"));
+            if let Ok(url) = base_url.join(href) {
+                favicon_urls.push((size, url.to_string()));
+            }
         }
     }
 
@@ -30,57 +41,23 @@ pub fn fetch_favicon_url(html: &str, base_url: Url) -> Option<String> {
     let apple_icon_selector = Selector::parse(r#"link[rel~="apple-touch-icon"]"#).unwrap();
     for icon_element in document.select(&apple_icon_selector) {
         if let Some(href) = icon_element.value().attr("href") {
-            let priority = icon_element.value().attr("sizes")
-                .and_then(|sizes| sizes.split('x').next())
-                .and_then(|size| size.parse::<i32>().ok())
-                .unwrap_or(180);  // Apple touch icons are often 180x180
-            add_candidate(&mut icon_candidates, &base_url, href, priority);
+            let size = parse_size(icon_element.value().attr("sizes"));
+            if let Ok(url) = base_url.join(href) {
+                favicon_urls.push((size, url.to_string()));
+            }
         }
     }
 
-    // Add common favicon locations
-    let common_locations = [
-        "/favicon.ico",
-        "/favicon.png",
-        "/apple-touch-icon.png",
-        "/apple-touch-icon-precomposed.png",
-        "/touch-icon-iphone.png",
-        "/touch-icon-ipad.png",
-        "/touch-icon-iphone-retina.png",
-        "/touch-icon-ipad-retina.png",
-        "/browserconfig.xml",  // For Microsoft tile icons
-        "/site.webmanifest",   // Web App Manifest (might contain icon information)
-    ];
-
-    for location in &common_locations {
-        add_candidate(&mut icon_candidates, &base_url, location, 10);  // Lower priority for common locations
-    }
-
-    // Select the highest resolution favicon
-    icon_candidates.into_iter().max_by_key(|&(_, priority)| priority).map(|(url, _)| url)
+    // Sort by size in descending order (largest first) and return the first URL
+    favicon_urls.sort_by(|a, b| b.0.cmp(&a.0));
+    favicon_urls.into_iter().map(|(_, url)| url).next()
 }
+pub async fn check_for_favicon(icon_url: String) -> Option<String> {
+    let client = Client::new();
 
-pub async fn try_basic_locations(base_url: Url) -> Option<String> {
-    // If none of the above worked, try common favicon locations
-    let common_locations = [
-        "/favicon.ico",
-        "/favicon.png",
-        "/apple-touch-icon.png",
-        "/apple-touch-icon-precomposed.png",
-    ];
-
-    for location in &common_locations {
-        let favicon_url = base_url.join(location).ok()?;
-        if Client::new()
-            .head(favicon_url.as_str())
-            .send()
-            .await
-            .ok()?
-            .status()
-            .is_success()
-        {
-            return Some(favicon_url.to_string());
-        }
+    info!("Check here: {icon_url}");
+    if client.head(&icon_url).send().await.ok()?.status().is_success() {
+        return Some(icon_url);
     }
 
     None

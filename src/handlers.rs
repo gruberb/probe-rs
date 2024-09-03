@@ -1,6 +1,6 @@
-use axum::{extract::Query, http::StatusCode, response::Response};
+use axum::{debug_handler, extract::Query, http::StatusCode, response::Response};
 use serde::Deserialize;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use url::Url;
 
 use crate::{favicon, image};
@@ -11,11 +11,12 @@ pub struct FaviconQuery {
     pub size: Option<u32>, // Optional size parameter
 }
 
+#[debug_handler]
 pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response, StatusCode> {
     let url = query.url.clone();
     info!("Try to fetch favicon for: {url}");
     let client = reqwest::Client::new();
-    let base_url = format!("http://{}", url);
+    let base_url = format!("https://{}", url);
 
     // Fetch the HTML
     let resp = client
@@ -39,14 +40,15 @@ pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response
     let base_url = Url::parse(&base_url).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Attempt to find the favicon URL
-    let favicon_url = match favicon::fetch_favicon_url(&html, base_url.clone()) {
-        Some(url) => Some(url),
+    let possible_location = favicon::parse_favicon_url(&html, base_url.clone()).unwrap_or_else(|| format!("{}/favicon.ico", base_url));
+
+    let favicon_url = match favicon::check_for_favicon(possible_location).await {
+        Some(url) => url,
         None => {
-            warn!("No Favicon URL found, trying basic locations");
-            favicon::try_basic_locations(base_url.clone()).await
+            error!("No Favicon found for {base_url}");
+            return Err(StatusCode::NOT_FOUND)
         }
-    }
-    .unwrap_or_else(|| format!("{}/favicon.ico", base_url));
+    };
 
     // Fetch favicon
     let favicon_resp = client
