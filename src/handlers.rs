@@ -13,18 +13,20 @@ pub struct FaviconQuery {
 
 #[debug_handler]
 pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response, StatusCode> {
-    let url = query.url.clone();
+    let mut url = query.url.clone();
     info!("Try to fetch favicon for: {url}");
     let client = reqwest::Client::new();
+
+    if !url.starts_with("www.") && !url.contains("://") {
+        url = format!("www.{}", url);
+    }
+
     let base_url = format!("https://{}", url);
 
     // Fetch the HTML
     let resp = client
         .get(base_url.as_str())
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)",
-        )
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         .send()
         .await
         .map_err(|e| {
@@ -40,31 +42,21 @@ pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response
     let base_url = Url::parse(&base_url).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Attempt to find the favicon URL
-    let possible_location = favicon::parse_favicon_url(&html, base_url.clone()).unwrap_or_else(|| format!("{}/favicon.ico", base_url));
-
-    let favicon_url = match favicon::check_for_favicon(possible_location).await {
-        Some(url) => url,
-        None => {
-            error!("No Favicon found for {base_url}");
-            return Err(StatusCode::NOT_FOUND)
-        }
-    };
+    let possible_location = favicon::parse_favicon_url(&html, base_url.clone())
+        .unwrap_or_else(|| format!("{}/favicon.ico", base_url));
 
     // Fetch favicon
     let favicon_resp = client
-        .get(&favicon_url)
-        .header(
-            "User-Agent",
-            "Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0)",
-        )
+        .get(&possible_location)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         .send()
         .await
         .map_err(|e| {
-            error!("Trying to get favicon url: {e}");
-            StatusCode::BAD_REQUEST
+            error!("No Favicon found for {base_url}: {e:?}");
+            StatusCode::NOT_FOUND
         })?;
 
-    info!("Fetched the favicon from: {favicon_url}");
+    info!("Fetched the favicon from: {possible_location}");
 
     let content_type = favicon_resp
         .headers()

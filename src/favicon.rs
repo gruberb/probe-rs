@@ -1,7 +1,5 @@
 use scraper::{Html, Selector};
-use reqwest::Client;
 use url::Url;
-use tracing::info;
 
 pub fn parse_favicon_url(html: &str, base_url: Url) -> Option<String> {
     let document = Html::parse_document(&html);
@@ -27,7 +25,8 @@ pub fn parse_favicon_url(html: &str, base_url: Url) -> Option<String> {
     }
 
     // Check for <link rel="icon"> or <link rel="shortcut icon">
-    let icon_selector = Selector::parse(r#"link[rel~="icon"], link[rel~="shortcut icon"]"#).unwrap();
+    let icon_selector =
+        Selector::parse(r#"link[rel~="icon"], link[rel~="shortcut icon"]"#).unwrap();
     for icon_element in document.select(&icon_selector) {
         if let Some(href) = icon_element.value().attr("href") {
             let size = parse_size(icon_element.value().attr("sizes"));
@@ -51,14 +50,4 @@ pub fn parse_favicon_url(html: &str, base_url: Url) -> Option<String> {
     // Sort by size in descending order (largest first) and return the first URL
     favicon_urls.sort_by(|a, b| b.0.cmp(&a.0));
     favicon_urls.into_iter().map(|(_, url)| url).next()
-}
-pub async fn check_for_favicon(icon_url: String) -> Option<String> {
-    let client = Client::new();
-
-    info!("Check here: {icon_url}");
-    if client.head(&icon_url).send().await.ok()?.status().is_success() {
-        return Some(icon_url);
-    }
-
-    None
 }
