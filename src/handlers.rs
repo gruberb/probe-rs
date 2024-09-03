@@ -62,16 +62,33 @@ pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response
             StatusCode::BAD_REQUEST
         })?;
 
-    info!("Fetched the favicon: {favicon_resp:?}");
+    info!("Fetched the favicon from: {favicon_url}");
+
+    let content_type = favicon_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_string())
+        .unwrap_or_default();
 
     let favicon_data = favicon_resp.bytes().await.map_err(|e| {
-        error!("Get the favicon as bytes: {e}");
+        error!("Failed to read favicon data: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    debug!("Got the favicon data: {favicon_data:?}");
+    debug!("Got the favicon data, content-type: {content_type}");
 
-    // Resize favicon
+    // Check if the favicon is an SVG
+    if content_type == "image/svg+xml" {
+        // Return the SVG as-is without resizing
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "image/svg+xml")
+            .body(favicon_data.into())
+            .unwrap());
+    }
+
+    // If not SVG, resize the favicon
     let size = query.size.unwrap_or(32);
     let resized_favicon = match image::resize_image(&favicon_data, size) {
         Some(data) => data,
@@ -80,6 +97,7 @@ pub async fn fetch_favicon(Query(query): Query<FaviconQuery>) -> Result<Response
 
     Ok(Response::builder()
         .status(StatusCode::OK)
+        .header("Content-Type", "image/png") // Assuming PNG after resize
         .body(resized_favicon.into())
         .unwrap())
 }
